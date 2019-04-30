@@ -59,6 +59,9 @@ end topLevel;
 
 architecture Behavioral of topLevel is
 
+
+-----------------------------------------------------
+--INPUT
 component lkupExtractor is
     Port ( iData : in  STD_LOGIC_VECTOR (143 downto 0);
            trigger : in  STD_LOGIC;
@@ -70,11 +73,36 @@ component lkupExtractor is
            len : in  STD_LOGIC_VECTOR (2 downto 0));
 end component;
 
+COMPONENT DataFIFO
+  PORT (
+    clk : IN STD_LOGIC;
+    rst : IN STD_LOGIC;
+    din : IN STD_LOGIC_VECTOR(144 DOWNTO 0);
+    wr_en : IN STD_LOGIC;
+    rd_en : IN STD_LOGIC;
+    dout : OUT STD_LOGIC_VECTOR(144 DOWNTO 0);
+    full : OUT STD_LOGIC;
+    empty : OUT STD_LOGIC
+  );
+END COMPONENT;
+
 type ipStates is (waiting, reading);
 signal ipState : ipStates := waiting;
 
-signal EOP : STD_LOGIC;
+signal EOP, ipFIFOfull, iDataRdinternal : STD_LOGIC;
 signal iDataStored : STD_LOGIC_VECTOR(144 downto 0);
+
+--INPUT ENDS
+------------------------------------------------------
+
+------------------------------------------------------
+--LKUP
+
+type lkupStates is (waiting, lkupSent, waitingToSend);
+signal lkupState : lkupState:=waiting;
+--LKUP ENDS
+------------------------------------------------------
+
 
 
 -------------------------
@@ -83,10 +111,18 @@ signal lkupOP : STD_LOGIC_VECTOR (127 downto 0);
 signal lkupOV, lkupFail, lkupExtractorTrigger : STD_LOGIC;
 signal lkupOffset : STD_LOGIC_VECTOR (3 downto 0);
 signal lkupLen : STD_LOGIC_VECTOR (2 downto 0);
+
+signal dout : STD_LOGIC_VECTOR (144 downto 0);
+signal rd_en, empty : STD_LOGIC;
+
+signal offsetCounterSig : STD_LOGIC_VECTOR (15 downto 0);
+signal currPacketOffsetSig : STD_LOGIC_VECTOR (15 downto 0);
+signal currPacketLengthSig : STD_LOGIC_VECTOR (2 downto 0);
 ------------------------
 
 
 begin
+
 
 LE : lkupExtractor port map
 		(	iData => iData,
@@ -98,46 +134,72 @@ LE : lkupExtractor port map
 			offset => lkupOffset,
 			len => lkupLen		
 		);
+iDataFIFO : DataFIFO
+  PORT MAP (
+    clk => clk,
+    rst => rst,
+    din => iDataStored,
+    wr_en => iDataRdinternal,
+    rd_en => rd_en,
+    dout => dout,
+    full => ipFIFOfull,
+    empty => empty
+  );
 
-EOP <= not(iData(143) and iData(134) and iData(125) and iData(116) and iData(107) and iData(98) and iData(89) and iData(80) and iData(71) and iData(62) and iData(53) and iData(44) and iData(35) and iData(26) and iData(17) and iData(8));
+EOP <= iDataRdinternal and not(iData(143) and iData(134) and iData(125) and iData(116) and iData(107) and iData(98) and iData(89) and iData(80) and iData(71) and iData(62) and iData(53) and iData(44) and iData(35) and iData(26) and iData(17) and iData(8));
 iDataStored <= EOP & iData;
+iDataRd <= iDataRdinternal;
 
 input:process(clk)
 
 variable offsetCounter : integer range 0 to 65535;
 variable currPacketOffset : integer range 0 to 65535;
-variable currPacketLength : integer range 0 to 7;
+variable currPacketOffsetLength : integer range 0 to 7;
 
 begin
 if rising_edge(clk) then
 	case ipState is
 		when waiting =>
+			lkupExtractorTrigger <= '0';
+			iDataRdinternal <= '0';
+			offsetCounter := 0;
 		--When iDataAv is = 1, we assume that iOffset, iLength, iInst are valid.
 		--Thus, we store these values in the same clock cycle as 
-			if iDataAv = '1' then --and lkup doesn't already have one packet in queue and FIFO is not full
-				iDataRd <= '1';--rd_en for ip FIFOs
-				offsetCounter := 0;
+			if ((iDataAv = '1') and not(lkupState = waitingtosend) and not(ipFIFOfull)) then 
 				ipState <= reading;
 				currPacketOffset := to_integer(unsigned(iOffset));
-				currPacketLength := to_integer(unsigned(iLength));
+				currPacketOffsetLength := to_integer(unsigned(iLength));
+				lkupOffset <= iOffset(3 downto 0);
+				lkupLen <= iLength;
 			end if;
 		when reading =>
-			if offsetCounter < currPacketOffset and offsetCounter + 16 > currPacketOffset then
+			iDataRdinternal <= '1';--rd_en for ip FIFOs
+			if ((offsetCounter < currPacketOffset) and (offsetCounter + 16 > currPacketOffset)) then
 				lkupExtractorTrigger <= '1';
 				--curr vector has required bytes
 			else
-				lkupExtractorTrigger <= '0';
-				offsetCounter := offsetCounter + 16;
+				lkupExtractorTrigger <= '0';	
 			end if;
+			offsetCounter := offsetCounter + 16;
 			if EOP = '1' then
 				--current vector has some dv=0
-				iDataRd <= '0';
 				ipState <= waiting;
 			end if;
 	end case;
+	
+	offsetCounterSig <= STD_LOGIC_VECTOR(to_unsigned(offsetCounter,offsetCounterSig'length));
+	currPacketOffsetSig <= STD_LOGIC_VECTOR(to_unsigned(currPacketOffset,currPacketOffsetSig'length));
+	currPacketOffsetLengthSig <= STD_LOGIC_VECTOR(to_unsigned(currPacketOffsetLength,currPacketOffsetLengthSig'length));
 end if;
 end process;
 
 
+
+
 end Behavioral;
 
+-----------------------------------------------------------
+--NOTES
+--One lkup data register
+--If it is not empty, that means we are waiting for previous lkup and next packet lkup is stored. 
+--can't accept anymore packets
