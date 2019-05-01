@@ -51,10 +51,51 @@ architecture Behavioral of lkupExtractor is
 --Trigger is '1' for exactly one clock cycle. That very clock cycle should be considered for processing.
 --Let the extracted bits be extractedBits(len*8-1 downto 0). Then output should be "111...111" & extractedBits
 --In case extractedBits are all zero, or dv='0' corresponding some extractedBits, then put fail<='1' for one clock cycle.
--- In case output is correct, then outputValid <= '1' for exactly 1 clock cycle
+--In case output is correct, then outputValid <= '1' for exactly 1 clock cycle
+--output should remain the same until the next time you get trigger
 ----------------------------------------------------
+
+--DUMMY
+type states is (idle, working);
+signal pstate : states := idle;
 begin
 
+
+
+-----------------------------------------
+--DUMMY PROCESS
+--JUST FOR DEBUGGING
+process(clk)
+begin
+if rising_edge(clk) then
+	case pstate is 
+		when idle =>
+			outputValid <= '0';
+			if trigger='1' then
+				output <= "01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101" &
+								"01010101";
+				outputValid <= '1';
+			end if;
+		when working =>
+	end case;
+end if;
+end process;
+--DUMMY PROCESS ENDS
+-----------------------------------------
 
 end Behavioral;
 

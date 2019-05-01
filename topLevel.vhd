@@ -99,38 +99,53 @@ signal iDataStored : STD_LOGIC_VECTOR(144 downto 0);
 --LKUP
 
 type lkupStates is (waiting, lkupSent, waitingToSend);
-signal lkupState : lkupState:=waiting;
+signal lkupState : lkupStates :=waiting;
+signal LEOutput : STD_LOGIC_VECTOR (127 downto 0);
+signal LEOutputValid, LEFail, LETrigger : STD_LOGIC;
+signal lkupOffset : STD_LOGIC_VECTOR (3 downto 0);
+signal lkupLen : STD_LOGIC_VECTOR (2 downto 0);
+signal lkupMissInternal : STD_LOGIC;
+signal lkupFlowPrtyInternal : STD_LOGIC_VECTOR (2 downto 0);
+signal lkupFlowIdInternal : STD_LOGIC_VECTOR (7 downto 0);
+signal LkupFlowInfoInternal : STD_LOGIC_VECTOR (255 downto 0);
 --LKUP ENDS
 ------------------------------------------------------
 
+------------------------------------------------------
+--Processing
 
+--Make different signals
+--signal lkupMissInternal : STD_LOGIC;
+--signal lkupFlowPrtyInternal : STD_LOGIC_VECTOR (2 downto 0);
+--signal lkupFlowIdInternal : STD_LOGIC_VECTOR (7 downto 0);
+--signal LkupFlowInfoInternal : STD_LOGIC_VECTOR (255 downto 0);
+--Processing ends
+------------------------------------------------------
 
 -------------------------
 --Temp Signals
-signal lkupOP : STD_LOGIC_VECTOR (127 downto 0);
-signal lkupOV, lkupFail, lkupExtractorTrigger : STD_LOGIC;
-signal lkupOffset : STD_LOGIC_VECTOR (3 downto 0);
-signal lkupLen : STD_LOGIC_VECTOR (2 downto 0);
+
 
 signal dout : STD_LOGIC_VECTOR (144 downto 0);
 signal rd_en, empty : STD_LOGIC;
 
 signal offsetCounterSig : STD_LOGIC_VECTOR (15 downto 0);
 signal currPacketOffsetSig : STD_LOGIC_VECTOR (15 downto 0);
-signal currPacketLengthSig : STD_LOGIC_VECTOR (2 downto 0);
+signal currPacketOffsetLengthSig : STD_LOGIC_VECTOR (2 downto 0);
 ------------------------
 
 
 begin
 
-
+----------------------------------------
+--Components
 LE : lkupExtractor port map
 		(	iData => iData,
-			trigger => lkupExtractorTrigger,
-			output => lkupOP,
-			outputValid => lkupOV,
+			trigger => LETrigger,
+			output => LEOutput,
+			outputValid => LEOutputValid,
 			clk => clk,
-			fail => lkupFail,
+			fail => LEFail,--This hasn't been addressed yet
 			offset => lkupOffset,
 			len => lkupLen		
 		);
@@ -146,9 +161,15 @@ iDataFIFO : DataFIFO
     empty => empty
   );
 
+--------------------------------------------------
+--OUTPUTS
+iDataRd <= iDataRdinternal;
+lkupData <= LEOutput;
+--------------------------------------------------
+--Signals
 EOP <= iDataRdinternal and not(iData(143) and iData(134) and iData(125) and iData(116) and iData(107) and iData(98) and iData(89) and iData(80) and iData(71) and iData(62) and iData(53) and iData(44) and iData(35) and iData(26) and iData(17) and iData(8));
 iDataStored <= EOP & iData;
-iDataRd <= iDataRdinternal;
+
 
 input:process(clk)
 
@@ -160,12 +181,12 @@ begin
 if rising_edge(clk) then
 	case ipState is
 		when waiting =>
-			lkupExtractorTrigger <= '0';
+			LETrigger <= '0';
 			iDataRdinternal <= '0';
 			offsetCounter := 0;
 		--When iDataAv is = 1, we assume that iOffset, iLength, iInst are valid.
 		--Thus, we store these values in the same clock cycle as 
-			if ((iDataAv = '1') and not(lkupState = waitingtosend) and not(ipFIFOfull)) then 
+			if ((iDataAv = '1') and not(lkupState = waitingtosend) and ipFIFOfull='0') then 
 				ipState <= reading;
 				currPacketOffset := to_integer(unsigned(iOffset));
 				currPacketOffsetLength := to_integer(unsigned(iLength));
@@ -175,10 +196,10 @@ if rising_edge(clk) then
 		when reading =>
 			iDataRdinternal <= '1';--rd_en for ip FIFOs
 			if ((offsetCounter < currPacketOffset) and (offsetCounter + 16 > currPacketOffset)) then
-				lkupExtractorTrigger <= '1';
+				LETrigger <= '1';
 				--curr vector has required bytes
 			else
-				lkupExtractorTrigger <= '0';	
+				LETrigger <= '0';	
 			end if;
 			offsetCounter := offsetCounter + 16;
 			if EOP = '1' then
@@ -193,7 +214,44 @@ if rising_edge(clk) then
 end if;
 end process;
 
-
+lkup:process(clk)
+begin
+if rising_edge(clk) then
+	case lkupState is
+		when waiting =>
+			if LEOutputValid='1' then
+				lkupDataValid <= '1';
+				lkupState <= lkupSent;
+			end if;
+		when lkupsent =>
+			lkupDataValid <= '0';
+			if LEOutputValid='1' and lkupFlowInfoValid='0' then
+				lkupState <= waitingToSend;
+			elsif LEOutputValid='0' and lkupFlowInfoValid='1' then
+				lkupState <= waiting;
+				lkupMissInternal <= lkupMiss;
+				lkupFlowPrtyInternal <= lkupFlowPrty;
+				lkupFlowIdInternal <= lkupFlowId;
+				LkupFlowInfoInternal <= LkupFlowInfo;
+			elsif LEOutputValid='1' and lkupFlowInfoValid='1' then
+				lkupMissInternal <= lkupMiss;
+				lkupFlowPrtyInternal <= lkupFlowPrty;
+				lkupFlowIdInternal <= lkupFlowId;
+				LkupFlowInfoInternal <= LkupFlowInfo;
+				lkupDataValid <= '1';
+			end if;
+		when waitingToSend =>
+			if lkupFlowInfoValid='1' then
+				lkupMissInternal <= lkupMiss;
+				lkupFlowPrtyInternal <= lkupFlowPrty;
+				lkupFlowIdInternal <= lkupFlowId;
+				LkupFlowInfoInternal <= LkupFlowInfo;
+				lkupDataValid <= '1';
+				lkupState <= lkupSent;
+			end if;
+	end case;
+end if;
+end process;
 
 
 end Behavioral;
